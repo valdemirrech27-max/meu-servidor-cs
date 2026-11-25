@@ -25,4 +25,4 @@ RUN for f in /server/parte*.zip; do unzip -o "$f"; rm "$f"; done \
 
 ENV LD_LIBRARY_PATH=/server
 EXPOSE 8080
-CMD ["sh", "-c", "websockify 8080 127.0.0.1:27015 & ./xashds -game cstrike +map de_dust2 +maxplayers 16 -console -log"]
+CMD ["sh", "-c", "websockify ${PORT:-8080} 127.0.0.1:27015 & ./xashds -game cstrike +ip 0.0.0.0 +port 27015 +map de_dust2 +maxplayers 16 -console"]
