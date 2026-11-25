@@ -24,9 +24,9 @@ RUN for f in /server/parte*.zip; do unzip -o "$f"; rm "$f"; done \
     && python3 -c "import struct; data=b'\x00'*16384; hdr=struct.pack('<4sII',b'WAD3',1,12+len(data)); entry=struct.pack('<IIIccH16s',12,len(data),len(data),b'B',b'\x00',0,b'CONCHARS'); open('/server/valve/gfx.wad','wb').write(hdr+data+entry)" \
     && cp -f /server/valve/gfx.wad /server/cstrike/gfx.wad
 
-# 3. Cria o proxy WebSocket-UDP compatível com o túnel Emscripten (xash.js)
+# 3. Cria o servidor HTTP + WebSocket-UDP escutando em 0.0.0.0
 RUN mkdir -p /server/proxy && cd /server/proxy && npm init -y && npm install ws \
-    && node -e 'const fs=require("fs");fs.writeFileSync("/server/proxy/index.js",`const WebSocket=require("ws"),dgram=require("dgram");const wss=new WebSocket.Server({port:process.env.PORT||8080});wss.on("connection",ws=>{const udp=dgram.createSocket("udp4");let hdr=null;udp.on("message",msg=>{if(ws.readyState===1)ws.send(hdr?Buffer.concat([hdr,msg]):msg);});ws.on("message",data=>{const buf=Buffer.from(data);if(buf.length>6&&buf[0]===0&&buf[1]===0){hdr=buf.slice(0,6);udp.send(buf.slice(6),27015,"127.0.0.1");}else if(buf.length>8&&buf[0]===255&&buf[1]===255){udp.send(buf,27015,"127.0.0.1");}else if(buf.length>6){hdr=buf.slice(0,6);udp.send(buf.slice(6),27015,"127.0.0.1");}});ws.on("close",()=>udp.close());});`);'
+    && printf 'const http = require("http");\nconst WebSocket = require("ws");\nconst dgram = require("dgram");\nconst PORT = Number(process.env.PORT) || 8080;\nconst server = http.createServer((req, res) => { res.writeHead(200); res.end("OK"); });\nconst wss = new WebSocket.Server({ server });\nwss.on("connection", (ws) => {\n  const udp = dgram.createSocket("udp4");\n  let hdr = null;\n  udp.on("message", (msg) => {\n    if (ws.readyState === 1) ws.send(hdr ? Buffer.concat([hdr, msg]) : msg);\n  });\n  ws.on("message", (data) => {\n    const buf = Buffer.from(data);\n    if (buf.length > 6 && !(buf[0] === 255 && buf[1] === 255)) {\n      hdr = buf.slice(0, 6);\n      udp.send(buf.slice(6), 27015, "127.0.0.1");\n    } else {\n      udp.send(buf, 27015, "127.0.0.1");\n    }\n  });\n  ws.on("close", () => udp.close());\n});\nserver.listen(PORT, "0.0.0.0", () => console.log("Proxy listening on 0.0.0.0:" + PORT));\n' > /server/proxy/index.js
 
 ENV LD_LIBRARY_PATH=/server
 EXPOSE 8080
