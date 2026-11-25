@@ -2,6 +2,7 @@ FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y python3-websockify libc6 libstdc++6 unzip wget tar && rm -rf /var/lib/apt/lists/*
 WORKDIR /server
 
+# 1. Baixa o motor oficial Xash3D FWGS Linux
 RUN wget -q https://github.com/FWGS/xash3d-fwgs/releases/download/continuous/xash3d-fwgs-linux-amd64.tar.gz \
     && tar -xzf xash3d-fwgs-linux-amd64.tar.gz \
     && rm xash3d-fwgs-linux-amd64.tar.gz \
@@ -10,13 +11,16 @@ RUN wget -q https://github.com/FWGS/xash3d-fwgs/releases/download/continuous/xas
     && if [ ! -f /server/xashds ] && [ -f /server/xash ]; then cp /server/xash /server/xashds; fi \
     && chmod +x /server/xashds
 
-COPY parte2.zip /server/
-RUN unzip -o parte2.zip && rm parte2.zip \
+# 2. Extrai o seu parte2.zip (cstrike) e restaura seu parte1.zip (valve) se existir
+COPY parte*.zip /server/
+RUN for f in /server/parte*.zip; do unzip -o "$f"; rm "$f"; done \
     && CSTRIKE_DIR=$(find /server -maxdepth 3 -name cstrike -type d | head -n 1) \
     && if [ -n "$CSTRIKE_DIR" ] && [ "$CSTRIKE_DIR" != "/server/cstrike" ]; then cp -rn "$CSTRIKE_DIR" /server/; fi \
-    && mkdir -p /server/valve/dlls \
-    && cp -n /server/cstrike/dlls/*.so /server/valve/dlls/ 2>/dev/null || true
+    && VALVE_DIR=$(find /server -maxdepth 3 -name valve -type d | head -n 1) \
+    && if [ -n "$VALVE_DIR" ] && [ "$VALVE_DIR" != "/server/valve" ]; then cp -rn "$VALVE_DIR" /server/; fi \
+    && mkdir -p /server/valve/dlls /server/cstrike/dlls \
+    && touch /server/valve/valve.rc /server/cstrike/server.cfg
 
 ENV LD_LIBRARY_PATH=/server
 EXPOSE 8080
-CMD ["sh", "-c", "websockify 8080 127.0.0.1:27015 & ./xashds -game cstrike +map de_dust2 +maxplayers 16"]
+CMD ["sh", "-c", "websockify 8080 127.0.0.1:27015 & ./xashds -game cstrike +map de_dust2 +maxplayers 16 -console -log"]
