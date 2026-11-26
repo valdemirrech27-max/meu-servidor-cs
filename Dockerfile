@@ -3,7 +3,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # 1. Dependencias essenciais em uma unica camada
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates python3 nodejs npm libc6 libstdc++6 libgcc-s1 iproute2 unzip wget tar \
+    ca-certificates python3 nodejs npm libc6 libstdc++6 libgcc-s1 unzip wget tar \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
@@ -29,36 +29,36 @@ RUN for f in /server/parte*.zip; do unzip -o "$f"; rm "$f"; done \
     && python3 -c "import struct; data=b'\x00'*16384; hdr=struct.pack('<4sII',b'WAD3',1,12+len(data)); entry=struct.pack('<IIIccH16s',12,len(data),len(data),b'B',b'\x00',0,b'CONCHARS'); open('/server/valve/gfx.wad','wb').write(hdr+data+entry)" \
     && cp -f /server/valve/gfx.wad /server/cstrike/gfx.wad
 
-# 4. Proxy WebSocket-UDP seguro usando heredoc literal (sem risco de escape quebrado)
+# 4. Proxy WebSocket-UDP lendo /proc/net/udp e /proc/net/udp6
 RUN mkdir -p /server/proxy && cd /server/proxy && npm init -y && npm install ws
 RUN cat << 'EOF' > /server/proxy/index.js
-const { exec } = require("child_process");
+const fs = require("fs");
 const http = require("http");
 const WebSocket = require("ws");
 const dgram = require("dgram");
 
 const PORT = Number(process.env.PORT) || 8080;
-let cachedPorts = [27015];
+const activeNodePorts = new Set();
 
-function refreshPorts() {
-  exec("ss -ulnp", { encoding: "utf8" }, (err, out) => {
-    if (err || !out) return;
-    const found = new Set();
-    for (const line of out.split("\n")) {
-      if (line.includes("xash") && !line.includes("node")) {
-        const matches = line.matchAll(/(?:\*|0\.0\.0\.0|\[::\]|127\.0\.0\.1):(\d+)/g);
-        for (const m of matches) {
-          const p = Number(m[1]);
-          if (p > 1024) found.add(p);
+function findXashPorts() {
+  const found = new Set();
+  for (const file of ["/proc/net/udp", "/proc/net/udp6"]) {
+    try {
+      const lines = fs.readFileSync(file, "utf8").trim().split("\n").slice(1);
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts[1]) {
+          const hexPort = parts[1].split(":")[1];
+          const p = parseInt(hexPort, 16);
+          if (p > 1024 && !activeNodePorts.has(p)) {
+            found.add(p);
+          }
         }
       }
-    }
-    if (found.size) cachedPorts = [...found];
-  });
+    } catch (e) {}
+  }
+  return found.size ? [...found] : [27015];
 }
-
-setInterval(refreshPorts, 2000);
-refreshPorts();
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
@@ -68,14 +68,17 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 
 wss.on("connection", (ws) => {
-  console.log("Cliente WS conectado! Portas alvo:", cachedPorts.join(","));
+  const targets = findXashPorts();
+  console.log("Cliente WS conectado! Portas alvo:", targets.join(","));
   const udp = dgram.createSocket("udp4");
+  let myPort = 0;
   let prefix = null;
   let closed = false;
 
   const cleanup = () => {
     if (!closed) {
       closed = true;
+      if (myPort) activeNodePorts.delete(myPort);
       try { udp.close(); } catch (e) {}
     }
   };
@@ -85,9 +88,12 @@ wss.on("connection", (ws) => {
     cleanup();
   });
 
-  udp.bind(0);
+  udp.bind(0, () => {
+    myPort = udp.address().port;
+    activeNodePorts.add(myPort);
+  });
 
-  udp.on("message", (msg, rinfo) => {
+  udp.on("message", (msg) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(prefix ? Buffer.concat([prefix, msg]) : msg);
     }
@@ -99,7 +105,8 @@ wss.on("connection", (ws) => {
     const payload = idx > 0 ? buf.slice(idx) : (idx === 0 ? buf : null);
     if (idx > 0) prefix = buf.slice(0, idx);
     if (payload && !closed) {
-      cachedPorts.forEach((p) => udp.send(payload, p, "127.0.0.1"));
+      const currentTargets = findXashPorts();
+      currentTargets.forEach((p) => udp.send(payload, p, "127.0.0.1"));
     }
   });
 
@@ -112,7 +119,7 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 EOF
 
-# 5. Script de inicializacao com verificacao de bibliotecas e logs limpos
+# 5. Script de inicializacao protegido contra CRLF (\r)
 RUN cat << 'EOF' > /server/start.sh
 #!/bin/sh
 cd /server
@@ -129,8 +136,9 @@ while true; do
   sleep 5
 done
 EOF
-RUN chmod +x /server/start.sh
+
+RUN sed -i 's/\r$//' /server/start.sh /server/proxy/index.js && chmod +x /server/start.sh
 
 ENV LD_LIBRARY_PATH=/server:/server/valve/dlls:/server/cstrike/dlls
 EXPOSE 8080
-CMD ["/server/start.sh"]
+CMD ["/bin/sh", "/server/start.sh"]
