@@ -12,7 +12,7 @@ RUN wget -q https://github.com/FWGS/xash3d-fwgs/releases/download/continuous/xas
     && if [ ! -f /server/xashds ] && [ -f /server/xash ]; then cp /server/xash /server/xashds; fi \
     && chmod +x /server/xashds
 
-# 2. Extrai os pacotes do servidor e gera gfx.wad
+# 2. Extrai os pacotes do servidor, gera gfx.wad e fixa net_port 27015
 COPY parte*.zip /server/
 RUN for f in /server/parte*.zip; do unzip -o "$f"; rm "$f"; done \
     && CSTRIKE_DIR=$(find /server -maxdepth 3 -name cstrike -type d | head -n 1) \
@@ -20,14 +20,15 @@ RUN for f in /server/parte*.zip; do unzip -o "$f"; rm "$f"; done \
     && VALVE_DIR=$(find /server -maxdepth 3 -name valve -type d | head -n 1) \
     && if [ -n "$VALVE_DIR" ] && [ "$VALVE_DIR" != "/server/valve" ]; then cp -rn "$VALVE_DIR" /server/; fi \
     && mkdir -p /server/valve/dlls /server/cstrike/dlls \
-    && touch /server/valve/valve.rc /server/cstrike/server.cfg \
+    && printf 'net_port 27015\n' > /server/valve/valve.rc \
+    && printf 'sv_lan 0\nnet_port 27015\n' > /server/cstrike/server.cfg \
     && python3 -c "import struct; data=b'\x00'*16384; hdr=struct.pack('<4sII',b'WAD3',1,12+len(data)); entry=struct.pack('<IIIccH16s',12,len(data),len(data),b'B',b'\x00',0,b'CONCHARS'); open('/server/valve/gfx.wad','wb').write(hdr+data+entry)" \
     && cp -f /server/valve/gfx.wad /server/cstrike/gfx.wad
 
-# 3. Proxy com diagnóstico hexadecimal e suporte completo ao cabeçalho Emscripten
+# 3. Proxy HTTP + WebSocket-UDP
 RUN mkdir -p /server/proxy && cd /server/proxy && npm init -y && npm install ws \
     && printf 'const http = require("http");\nconst WebSocket = require("ws");\nconst dgram = require("dgram");\nconst PORT = Number(process.env.PORT) || 8080;\nconst server = http.createServer((req, res) => { res.writeHead(200); res.end("OK"); });\nconst wss = new WebSocket.Server({ server });\nwss.on("connection", (ws) => {\n  console.log("Cliente WS conectado!");\n  const udp = dgram.createSocket("udp4");\n  let prefix = null;\n  udp.on("message", (msg) => {\n    console.log("TX UDP (" + msg.length + "b):", msg.slice(0, 20).toString("hex"));\n    if (ws.readyState === 1) ws.send(prefix ? Buffer.concat([prefix, msg]) : msg);\n  });\n  ws.on("message", (data) => {\n    const buf = Buffer.from(data);\n    console.log("RX WS (" + buf.length + "b):", buf.slice(0, 24).toString("hex"));\n    const idx = buf.indexOf(Buffer.from([0xff, 0xff, 0xff, 0xff]));\n    if (idx > 0) {\n      prefix = buf.slice(0, idx);\n      udp.send(buf.slice(idx), 27015, "127.0.0.1");\n    } else if (idx === 0) {\n      udp.send(buf, 27015, "127.0.0.1");\n    }\n  });\n  ws.on("close", () => udp.close());\n});\nserver.listen(PORT, "0.0.0.0", () => console.log("Proxy listening on 0.0.0.0:" + PORT));\n' > /server/proxy/index.js
 
 ENV LD_LIBRARY_PATH=/server
 EXPOSE 8080
-CMD ["sh", "-c", "node /server/proxy/index.js & ./xashds -game cstrike +ip 0.0.0.0 +hostport 27015 +sv_lan 0 +map de_dust2 +maxplayers 16 -console"]
+CMD ["sh", "-c", "node /server/proxy/index.js & ./xashds -game cstrike +ip 0.0.0.0 +net_port 27015 +sv_lan 0 +map de_dust2 +maxplayers 16 -console"]
