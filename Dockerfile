@@ -29,7 +29,7 @@ RUN for f in /server/parte*.zip; do unzip -o "$f"; rm "$f"; done \
     && python3 -c "import struct; data=b'\x00'*16384; hdr=struct.pack('<4sII',b'WAD3',1,12+len(data)); entry=struct.pack('<IIIccH16s',12,len(data),len(data),b'B',b'\x00',0,b'CONCHARS'); open('/server/valve/gfx.wad','wb').write(hdr+data+entry)" \
     && cp -f /server/valve/gfx.wad /server/cstrike/gfx.wad
 
-# 4. Proxy WebSocket-UDP lendo /proc/net/udp e /proc/net/udp6
+# 4. Proxy WebSocket-UDP com log explicito da porta detectada e tratamento de erros
 RUN mkdir -p /server/proxy && cd /server/proxy && npm init -y && npm install ws
 RUN cat << 'EOF' > /server/proxy/index.js
 const fs = require("fs");
@@ -44,18 +44,22 @@ function findXashPorts() {
   const found = new Set();
   for (const file of ["/proc/net/udp", "/proc/net/udp6"]) {
     try {
-      const lines = fs.readFileSync(file, "utf8").trim().split("\n").slice(1);
+      const content = fs.readFileSync(file, "utf8");
+      const lines = content.trim().split("\n").slice(1);
       for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts[1]) {
-          const hexPort = parts[1].split(":")[1];
+        const cols = line.trim().split(/\s+/);
+        // cols[1] = local_address (HEX_IP:HEX_PORT), cols[3] = st (07 = UDP_CLOSE / unbound)
+        if (cols[1] && cols[3] === "07") {
+          const hexPort = cols[1].split(":")[1];
           const p = parseInt(hexPort, 16);
           if (p > 1024 && !activeNodePorts.has(p)) {
             found.add(p);
           }
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error("Erro lendo " + file + ":", e.message);
+    }
   }
   return found.size ? [...found] : [27015];
 }
@@ -68,8 +72,6 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 
 wss.on("connection", (ws) => {
-  const targets = findXashPorts();
-  console.log("Cliente WS conectado! Portas alvo:", targets.join(","));
   const udp = dgram.createSocket("udp4");
   let myPort = 0;
   let prefix = null;
@@ -88,12 +90,14 @@ wss.on("connection", (ws) => {
     cleanup();
   });
 
-  udp.bind(0, () => {
+  udp.bind(0, "127.0.0.1", () => {
     myPort = udp.address().port;
     activeNodePorts.add(myPort);
+    console.log("Cliente WS conectado! Socket local :" + myPort + " | Portas UDP ativas:", findXashPorts().join(","));
   });
 
-  udp.on("message", (msg) => {
+  udp.on("message", (msg, rinfo) => {
+    console.log("TX UDP de :" + rinfo.port + " (" + msg.length + "b)");
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(prefix ? Buffer.concat([prefix, msg]) : msg);
     }
@@ -105,8 +109,8 @@ wss.on("connection", (ws) => {
     const payload = idx > 0 ? buf.slice(idx) : (idx === 0 ? buf : null);
     if (idx > 0) prefix = buf.slice(0, idx);
     if (payload && !closed) {
-      const currentTargets = findXashPorts();
-      currentTargets.forEach((p) => udp.send(payload, p, "127.0.0.1"));
+      const targets = findXashPorts();
+      targets.forEach((p) => udp.send(payload, p, "127.0.0.1"));
     }
   });
 
@@ -119,7 +123,7 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 EOF
 
-# 5. Script de inicializacao protegido contra CRLF (\r)
+# 5. Script de inicializacao sem buffer de log (stdbuf -oL) para exibir erros do xashds
 RUN cat << 'EOF' > /server/start.sh
 #!/bin/sh
 cd /server
@@ -131,7 +135,7 @@ sleep 1
 
 while true; do
   echo "=== Iniciando xashds ==="
-  ./xashds -dedicated -game cstrike -port 27015 +sv_lan 1 +map de_dust2 +maxplayers 16 -console 2>&1
+  stdbuf -oL -eL ./xashds -dedicated -game cstrike -port 27015 +sv_lan 1 +map de_dust2 +maxplayers 16 -console 2>&1
   echo "=== xashds saiu com codigo $? ==="
   sleep 5
 done
