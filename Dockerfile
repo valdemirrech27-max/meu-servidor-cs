@@ -30,4 +30,4 @@ RUN mkdir -p /server/proxy && cd /server/proxy && npm init -y && npm install ws 
 
 ENV LD_LIBRARY_PATH=/server
 EXPOSE 8080
-CMD ["sh", "-c", "node /server/proxy/index.js & ./xashds -game cstrike +ip 127.0.0.1 +port 27015 +sv_lan 0 +map de_dust2 +maxplayers 16 -console"]
+CMD ["sh", "-c", "node /server/proxy/index.js & exec ./xashds -game cstrike +ip 0.0.0.0 +sv_lan 1 +map de_dust2 +maxplayers 16 -console"]
